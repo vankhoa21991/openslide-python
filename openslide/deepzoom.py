@@ -27,7 +27,8 @@ from __future__ import division
 from io import BytesIO
 import math
 import openslide
-from PIL import Image
+from PIL import Image, ImageDraw
+import numpy as np
 from xml.etree.ElementTree import ElementTree, Element, SubElement
 
 class DeepZoomGenerator(object):
@@ -38,13 +39,14 @@ class DeepZoomGenerator(object):
     BOUNDS_SIZE_PROPS = (openslide.PROPERTY_NAME_BOUNDS_WIDTH,
                 openslide.PROPERTY_NAME_BOUNDS_HEIGHT)
 
-    def __init__(self, osr, tile_size=254, overlap=1, limit_bounds=False):
+    def __init__(self, osr, tiles,tile_size=254, overlap=1, limit_bounds=False):
         """Create a DeepZoomGenerator wrapping an OpenSlide object.
 
         osr:          a slide object.
         tile_size:    the width and height of a single tile.  For best viewer
                       performance, tile_size + 2 * overlap should be a power
                       of two.
+        tiles:        a list of [prob, (x,y)], probability of each tile and it's top-left coordinate position
         overlap:      the number of extra pixels to add to each interior edge
                       of a tile.
         limit_bounds: True to render only the non-empty slide region."""
@@ -59,6 +61,9 @@ class DeepZoomGenerator(object):
         self._z_t_downsample = tile_size
         self._z_overlap = overlap
         self._limit_bounds = limit_bounds
+
+        self.probs = tiles[0]
+        self.grids = tiles[1]
 
         # Precompute dimensions
         # Slide level and offset
@@ -144,14 +149,34 @@ class DeepZoomGenerator(object):
         level:     the Deep Zoom level.
         address:   the address of the tile within the level as a (col, row)
                    tuple."""
-
+        # print('address {}'.format(str(address)))
+        # print('level {}'.format(str(level)))
         # Read tile
         args, z_size = self._get_tile_info(level, address)
         tile = self._osr.read_region(*args)
 
+        print('args {}'.format(str(args)))
+
         # Apply on solid background
         bg = Image.new('RGB', tile.size, self._bg_color)
         tile = Image.composite(tile, bg, tile)
+
+        if args[1] == 0:
+            dist = []
+            for t in self.grids:
+                d = np.linalg.norm(np.array(t) - np.array(args[0]))
+                dist.append(d)
+            val, idx = min((val, idx) for (idx, val) in enumerate(dist))
+            if val < 100:
+                normalize_probs = (self.probs - min(self.probs)) / (max(self.probs) - min(self.probs))
+                normalize_prob = normalize_probs[idx]
+
+                poly = Image.new('RGBA', (512,512))
+                border_color = tile_border_color(int(normalize_prob * 100))
+                pdraw = ImageDraw.Draw(poly)
+                pdraw.rectangle([(0, 0), (512, 512)], fill=border_color)
+
+                tile.paste(poly, mask=poly)
 
         # Scale to the correct size
         if tile.size != z_size:
@@ -240,3 +265,23 @@ class DeepZoomGenerator(object):
         buf = BytesIO()
         tree.write(buf, encoding='UTF-8')
         return buf.getvalue().decode('UTF-8')
+
+def tile_border_color(tissue_percentage):
+    """
+    Obtain the corresponding tile border color for a particular tile tissue percentage.
+
+    Args:
+    tissue_percentage: The tile tissue percentage
+
+    Returns:
+    The tile border color corresponding to the tile tissue percentage.
+    """
+    if tissue_percentage >= 99:
+        border_color = (255,0,0, 50)
+    elif (tissue_percentage >= 90) and (tissue_percentage < 99):
+        border_color = (255,128,0, 50)
+    elif (tissue_percentage >= 50) and (tissue_percentage < 90):
+        border_color = (255,204,153, 50)
+    elif(tissue_percentage >= 0) and (tissue_percentage < 50):
+        border_color = (128,255,0, 50)
+    return border_color

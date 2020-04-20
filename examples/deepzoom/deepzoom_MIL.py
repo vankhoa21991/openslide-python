@@ -54,16 +54,34 @@ class _SlideCache(object):
         self._lock = Lock()
         self._cache = OrderedDict()
 
-    def get(self, path):
+    def load_inference_results(self, path):
+        with open(path + '/inference_result.pkl', 'rb') as handle:
+            results = pickle.load(handle)
+
+        self.slides = results['slides']
+        self.targets = results['targets']
+        self.maxs = results['maxs']
+        self.slideIDX = results['slideIDX']
+        self.grids_all = results['grid']
+        self.probs_all = results['probs']
+
+    def get(self, path, results_file):
         with self._lock:
             if path in self._cache:
                 # Move to end of LRU
                 slide = self._cache.pop(path)
                 self._cache[path] = slide
                 return slide
+        with open(results_file, 'rb') as handle:
+            results = pickle.load(handle)
+
+        index = list(results['slides']).index(path)
+        idx = [i for i, j in enumerate(results['slideIDX']) if j == index]
+        grids = results['grid'][min(idx):max(idx) + 1]
+        probs = results['probs'][min(idx):max(idx) + 1]
 
         osr = OpenSlide(path)
-        slide = DeepZoomGenerator(osr, **self.dz_opts)
+        slide = DeepZoomGenerator(osr, [probs, grids],**self.dz_opts)
         try:
             mpp_x = osr.properties[openslide.PROPERTY_NAME_MPP_X]
             mpp_y = osr.properties[openslide.PROPERTY_NAME_MPP_Y]
@@ -102,6 +120,7 @@ class _SlideFile(object):
 @app.before_first_request
 def _setup():
     app.basedir = os.path.abspath(app.config['SLIDE_DIR'])
+    app.results = app.config['RESULTS']
     config_map = {
         'DEEPZOOM_TILE_SIZE': 'tile_size',
         'DEEPZOOM_OVERLAP': 'overlap',
@@ -113,13 +132,14 @@ def _setup():
 
 def _get_slide(path):
     path = os.path.abspath(os.path.join(app.basedir, path))
+    results = app.results
     if not path.startswith(app.basedir + os.path.sep):
         # Directory traversal
         abort(404)
     if not os.path.exists(path):
         abort(404)
     try:
-        slide = app.cache.get(path)
+        slide = app.cache.get(path, results)
         slide.filename = os.path.basename(path)
         return slide
     except OpenSlideError:
@@ -168,7 +188,7 @@ def tile(path, level, col, row, format):
 
 
 if __name__ == '__main__':
-    parser = OptionParser(usage='Usage: %prog [options] [slide-directory]')
+    parser = OptionParser(usage='Usage: %prog [options] [slide-directory] [results]')
     parser.add_option('-B', '--ignore-bounds', dest='DEEPZOOM_LIMIT_BOUNDS',
                 default=True, action='store_false',
                 help='display entire scan area')
@@ -207,6 +227,7 @@ if __name__ == '__main__':
     # Set slide directory
     try:
         app.config['SLIDE_DIR'] = args[0]
+        app.config['RESULTS'] = args[1]
     except IndexError:
         pass
 

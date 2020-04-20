@@ -1,0 +1,1 @@
+python examples/deepzoom/deepzoom_MIL.py -Q 100  /home/vankhoa/datasets/ImgPath/PD/CS_small/ /home/vankhoa/code/Bayer/MILPath/results/2020-04-20-12-08-30_test/inference_result.pkl
