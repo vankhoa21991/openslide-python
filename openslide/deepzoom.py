@@ -39,7 +39,7 @@ class DeepZoomGenerator(object):
     BOUNDS_SIZE_PROPS = (openslide.PROPERTY_NAME_BOUNDS_WIDTH,
                 openslide.PROPERTY_NAME_BOUNDS_HEIGHT)
 
-    def __init__(self, osr, tiles,tile_size=254, overlap=1, limit_bounds=False):
+    def __init__(self, osr, tiles,tile_size=254, overlap=1, limit_bounds=False, heatmap=True):
         """Create a DeepZoomGenerator wrapping an OpenSlide object.
 
         osr:          a slide object.
@@ -61,6 +61,7 @@ class DeepZoomGenerator(object):
         self._z_t_downsample = tile_size
         self._z_overlap = overlap
         self._limit_bounds = limit_bounds
+        self.show_heatmap = heatmap
 
         self.probs = tiles[0]
         self.grids = tiles[1]
@@ -143,7 +144,7 @@ class DeepZoomGenerator(object):
         """The total number of Deep Zoom tiles in the image."""
         return sum(t_cols * t_rows for t_cols, t_rows in self._t_dimensions)
 
-    def get_tile(self, level, address):
+    def get_tile(self, level, address, show_heatmap=True):
         """Return an RGB PIL.Image for a tile.
 
         level:     the Deep Zoom level.
@@ -155,28 +156,38 @@ class DeepZoomGenerator(object):
         args, z_size = self._get_tile_info(level, address)
         tile = self._osr.read_region(*args)
 
+        self.show_heatmap = show_heatmap
+
         print('args {}'.format(str(args)))
 
         # Apply on solid background
         bg = Image.new('RGB', tile.size, self._bg_color)
         tile = Image.composite(tile, bg, tile)
 
-        if args[1] == 0:
-            dist = []
-            for t in self.grids:
-                d = np.linalg.norm(np.array(t) - np.array(args[0]))
-                dist.append(d)
-            val, idx = min((val, idx) for (idx, val) in enumerate(dist))
-            if val < 100:
-                normalize_probs = (self.probs - min(self.probs)) / (max(self.probs) - min(self.probs))
-                normalize_prob = normalize_probs[idx]
+        if self.show_heatmap and len(self.grids) and len(self.probs):
+            if args[1] == 0:
+                dist = []
+                for t in self.grids:
+                    d = np.linalg.norm(np.array(t) - np.array(args[0]))
+                    dist.append(d)
+                val, idx = min((val, idx) for (idx, val) in enumerate(dist))
+                # print(val)
+                if val < 100:
+                    normalize_probs = (self.probs - min(self.probs)) / (max(self.probs) - min(self.probs))
+                    sorted_norm_probs = sorted(normalize_probs, reverse=True)
+                    top5 = sorted_norm_probs[int(len(normalize_probs) * 0.05)]
+                    top20 = sorted_norm_probs[int(len(normalize_probs) * 0.2)]
+                    top50 = sorted_norm_probs[int(len(normalize_probs) * 0.5)]
 
-                poly = Image.new('RGBA', (512,512))
-                border_color = tile_border_color(int(normalize_prob * 100))
-                pdraw = ImageDraw.Draw(poly)
-                pdraw.rectangle([(0, 0), (512, 512)], fill=border_color)
+                    normalize_prob = normalize_probs[idx]
 
-                tile.paste(poly, mask=poly)
+                    poly = Image.new('RGBA', (512,512))
+                    border_color = tile_border_color(normalize_prob, top5, top20, top50)
+                    pdraw = ImageDraw.Draw(poly)
+                    pdraw.rectangle([(0, 0), (512, 512)], fill=border_color)
+
+                    tile.paste(poly, mask=poly)
+
 
         # Scale to the correct size
         if tile.size != z_size:
@@ -266,7 +277,7 @@ class DeepZoomGenerator(object):
         tree.write(buf, encoding='UTF-8')
         return buf.getvalue().decode('UTF-8')
 
-def tile_border_color(tissue_percentage):
+def tile_border_color(tissue_percentage, top5, top20, top50):
     """
     Obtain the corresponding tile border color for a particular tile tissue percentage.
 
@@ -276,12 +287,12 @@ def tile_border_color(tissue_percentage):
     Returns:
     The tile border color corresponding to the tile tissue percentage.
     """
-    if tissue_percentage >= 99:
-        border_color = (255,0,0, 50)
-    elif (tissue_percentage >= 90) and (tissue_percentage < 99):
-        border_color = (255,128,0, 50)
-    elif (tissue_percentage >= 50) and (tissue_percentage < 90):
-        border_color = (255,204,153, 50)
-    elif(tissue_percentage >= 0) and (tissue_percentage < 50):
-        border_color = (128,255,0, 50)
+    if tissue_percentage >= top5:
+        border_color = (0,0,255, 50)
+    elif (tissue_percentage >= top20) and (tissue_percentage < top5):
+        border_color = (0,255,255, 50)
+    elif (tissue_percentage >= top50) and (tissue_percentage < top20):
+        border_color = (0,255,0, 50)
+    elif(tissue_percentage >= 0) and (tissue_percentage < top50):
+        border_color = (255,255,0, 50)
     return border_color

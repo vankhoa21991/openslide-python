@@ -19,7 +19,7 @@
 #
 
 from collections import OrderedDict
-from flask import Flask, abort, make_response, render_template, url_for
+from flask import Flask, abort, make_response, render_template, url_for,request
 from io import BytesIO
 import openslide
 from openslide import OpenSlide, OpenSlideError
@@ -46,24 +46,12 @@ class PILBytesIO(BytesIO):
         '''Classic PIL doesn't understand io.UnsupportedOperation.'''
         raise AttributeError('Not supported')
 
-
 class _SlideCache(object):
     def __init__(self, cache_size, dz_opts):
         self.cache_size = cache_size
         self.dz_opts = dz_opts
         self._lock = Lock()
         self._cache = OrderedDict()
-
-    def load_inference_results(self, path):
-        with open(path + '/inference_result.pkl', 'rb') as handle:
-            results = pickle.load(handle)
-
-        self.slides = results['slides']
-        self.targets = results['targets']
-        self.maxs = results['maxs']
-        self.slideIDX = results['slideIDX']
-        self.grids_all = results['grid']
-        self.probs_all = results['probs']
 
     def get(self, path, results_file):
         with self._lock:
@@ -72,13 +60,18 @@ class _SlideCache(object):
                 slide = self._cache.pop(path)
                 self._cache[path] = slide
                 return slide
-        with open(results_file, 'rb') as handle:
-            results = pickle.load(handle)
+        probs = []
+        grids = []
+        if results_file != '':
+            with open(results_file, 'rb') as handle:
+                results = pickle.load(handle)
 
-        index = list(results['slides']).index(path)
-        idx = [i for i, j in enumerate(results['slideIDX']) if j == index]
-        grids = results['grid'][min(idx):max(idx) + 1]
-        probs = results['probs'][min(idx):max(idx) + 1]
+            filename = [file.split('/')[-1] for file in results['slides']]
+
+            index = filename.index(path.split('/')[-1])
+            idx = [i for i, j in enumerate(results['slideIDX']) if j == index]
+            grids = results['grid'][min(idx):max(idx) + 1]
+            probs = results['probs'][min(idx):max(idx) + 1]
 
         osr = OpenSlide(path)
         slide = DeepZoomGenerator(osr, [probs, grids],**self.dz_opts)
@@ -96,18 +89,24 @@ class _SlideCache(object):
                 self._cache[path] = slide
         return slide
 
-
 class _Directory(object):
-    def __init__(self, basedir, relpath=''):
+    def __init__(self, basedir, results_file, relpath=''):
+        filename = []
+        if results_file != '':
+            with open(results_file, 'rb') as handle:
+                results = pickle.load(handle)
+            filename = [file.split('/')[-1] for file in results['slides']]
         self.name = os.path.basename(relpath)
         self.children = []
         for name in sorted(os.listdir(os.path.join(basedir, relpath))):
             cur_relpath = os.path.join(relpath, name)
             cur_path = os.path.join(basedir, cur_relpath)
             if os.path.isdir(cur_path):
-                cur_dir = _Directory(basedir, cur_relpath)
+                cur_dir = _Directory(basedir, app.results, cur_relpath)
                 if cur_dir.children:
                     self.children.append(cur_dir)
+            elif results_file != '' and cur_relpath.split('/')[-1] not in filename:
+                continue
             elif OpenSlide.detect_format(cur_path):
                 self.children.append(_SlideFile(cur_relpath))
 
@@ -121,12 +120,15 @@ class _SlideFile(object):
 def _setup():
     app.basedir = os.path.abspath(app.config['SLIDE_DIR'])
     app.results = app.config['RESULTS']
+
     config_map = {
         'DEEPZOOM_TILE_SIZE': 'tile_size',
         'DEEPZOOM_OVERLAP': 'overlap',
         'DEEPZOOM_LIMIT_BOUNDS': 'limit_bounds',
+        'HEATMAP': 'heatmap',
     }
     opts = dict((v, app.config[k]) for k, v in config_map.items())
+    app.show_heatmap = opts['heatmap']
     app.cache = _SlideCache(app.config['SLIDE_CACHE_SIZE'], opts)
 
 
@@ -148,15 +150,16 @@ def _get_slide(path):
 
 @app.route('/')
 def index():
-    return render_template('files.html', root_dir=_Directory(app.basedir))
+    return render_template('files.html', root_dir=_Directory(app.basedir, app.results))
 
 
 @app.route('/<path:path>')
 def slide(path):
-    slide = _get_slide(path)
-    slide_url = url_for('dzi', path=path)
-    return render_template('slide-fullpage.html', slide_url=slide_url,
-            slide_filename=slide.filename, slide_mpp=slide.mpp)
+
+        slide = _get_slide(path)
+        slide_url = url_for('dzi', path=path)
+        return render_template('slide-fullpage.html', slide_url=slide_url,
+                slide_filename=slide.filename, slide_mpp=slide.mpp)
 
 
 @app.route('/<path:path>.dzi')
@@ -176,7 +179,7 @@ def tile(path, level, col, row, format):
         # Not supported by Deep Zoom
         abort(404)
     try:
-        tile = slide.get_tile(level, (col, row))
+        tile = slide.get_tile(level, (col, row), app.show_heatmap)
     except ValueError:
         # Invalid level or coordinates
         abort(404)
@@ -214,6 +217,9 @@ if __name__ == '__main__':
     parser.add_option('-s', '--size', metavar='PIXELS',
                 dest='DEEPZOOM_TILE_SIZE', type='int',
                 help='tile size [254]')
+    parser.add_option('-m', '--heatmap', metavar='HEATMAP',
+                      dest='HEATMAP', default=True,
+                      help='toggle heatmap')
 
     (opts, args) = parser.parse_args()
     # Load config file if specified
@@ -229,6 +235,6 @@ if __name__ == '__main__':
         app.config['SLIDE_DIR'] = args[0]
         app.config['RESULTS'] = args[1]
     except IndexError:
-        pass
+        app.config['RESULTS'] = ''
 
     app.run(host=opts.host, port=opts.port, threaded=True)
