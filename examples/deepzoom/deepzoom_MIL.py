@@ -170,7 +170,6 @@ def dzi(path):
     resp.mimetype = 'application/xml'
     return resp
 
-
 @app.route('/<path:path>_files/<int:level>/<int:col>_<int:row>.<format>')
 def tile(path, level, col, row, format):
     slide = _get_slide(path)
@@ -188,7 +187,6 @@ def tile(path, level, col, row, format):
     resp = make_response(buf.getvalue())
     resp.mimetype = 'image/%s' % format
     return resp
-
 
 if __name__ == '__main__':
     parser = OptionParser(usage='Usage: %prog [options] [slide-directory] [results]')
