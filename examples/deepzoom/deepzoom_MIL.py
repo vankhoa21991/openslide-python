@@ -69,9 +69,13 @@ class _SlideCache(object):
             filename = [file.split('/')[-1] for file in results['slides']]
 
             index = filename.index(path.split('/')[-1])
-            idx = [i for i, j in enumerate(results['slideIDX']) if j == index]
-            grids = results['grid'][min(idx):max(idx) + 1]
-            probs = results['probs'][min(idx):max(idx) + 1]
+            if results_file.find('clam') != -1:
+                grids = results['grid'][index]
+                probs = results['probs'][index]
+            else:
+                idx = [i for i, j in enumerate(results['slideIDX']) if j == index]
+                grids = results['grid'][min(idx):max(idx) + 1]
+                probs = results['probs'][min(idx):max(idx) + 1]
 
         osr = OpenSlide(path)
         slide = DeepZoomGenerator(osr, [probs, grids],**self.dz_opts)
